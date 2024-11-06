@@ -1,111 +1,125 @@
 #include <Servo.h>
 
-// Pin Definitions for Traffic Lights
-#define redLight 13
-#define yellowLight 12
-#define greenLight 11
+// Pin Definitions
+const int trigPin = 8;        // Ultrasonic sensor Trig pin
+const int echoPin = 9;        // Ultrasonic sensor Echo pin
+const int redLED = 10;        // Red LED for stop
+const int yellowLED = 11;     // Yellow LED for caution
+const int greenLED = 12;      // Green LED for go
+const int servoPin = 3;       // Servo motor pin
+const int buttonPin = A3;     // Pushbutton pin for manual control
 
-// Pin Definitions for Ultrasonic Sensor
-#define ultrasonicTrigPin 9
-#define ultrasonicEchoPin 8
-
-// Pin Definition for IR Sensor
-#define irSensorPin 7
-
-// Pin Definition for Push-Button Switch
-#define buttonPin 6 // Pin for the push-button switch
-
-// Servo for Toll Gate
-Servo gateServo;
-#define servoPin 10  // Pin for Servo motor
-
+// Variables
 long duration;
 int distance;
-int vehicleDetected;
-int buttonState;
+bool gateOpen = false;            // Track gate status
+bool lastButtonState = HIGH;      // Track previous button state
+bool buttonState;                 // Current button state
+unsigned long lastDebounceTime = 0;  // Debounce timer
+const unsigned long debounceDelay = 50;  // 50 ms debounce delay
+
+Servo gateServo;
 
 void setup() {
-  // Initialize traffic light pins
-  pinMode(redLight, OUTPUT);
-  pinMode(yellowLight, OUTPUT);
-  pinMode(greenLight, OUTPUT);
-  
-  // Initialize ultrasonic sensor pins
-  pinMode(ultrasonicTrigPin, OUTPUT);
-  pinMode(ultrasonicEchoPin, INPUT);
-  
-  // Initialize IR sensor pin
-  pinMode(irSensorPin, INPUT);
-  
-  // Initialize the servo motor for toll gate
-  gateServo.attach(servoPin);  
-  gateServo.write(0);  // Initial position: Gate closed
-  
-  // Initialize the button pin with internal pull-up
-  pinMode(buttonPin, INPUT_PULLUP); 
-  
-  // Begin serial communication for debugging
+  // Initialize Serial Monitor for debugging
   Serial.begin(9600);
+
+  // Pin Modes
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(redLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  pinMode(greenLED, OUTPUT);
+  pinMode(buttonPin, INPUT_PULLUP); // Button with internal pull-up
+
+  // Attach Servo
+  gateServo.attach(servoPin);
+
+  // Start with gate closed and red LED on
+  closeGate();
 }
 
 void loop() {
-  // Measure vehicle presence using IR sensor
-  vehicleDetected = digitalRead(irSensorPin);
+  // Handle button input with debouncing
+  int reading = digitalRead(buttonPin);
   
-  // Trigger ultrasonic sensor to measure distance
-  digitalWrite(ultrasonicTrigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(ultrasonicTrigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(ultrasonicTrigPin, LOW);
-  
-  // Read the echo pin and calculate the distance
-  duration = pulseIn(ultrasonicEchoPin, HIGH);
-  distance = duration * 0.034 / 2;  // Convert to centimeters
-  
-  // Read the button state
-  buttonState = digitalRead(buttonPin);
-  
-  // Debugging output to serial monitor
-  Serial.print("Distance: ");
-  Serial.println(distance);
-  Serial.print("Vehicle detected by IR sensor: ");
-  Serial.println(vehicleDetected);
-  Serial.print("Button state: ");
-  Serial.println(buttonState);
-  
-  // Check button state for manual control
-  if (buttonState == LOW) {  // Button pressed
-    gateServo.write(90); // Open gate
-    Serial.println("Gate opened manually");
-    delay(5000); // Keep the gate open for 5 seconds
-    gateServo.write(0); // Close gate
-    Serial.println("Gate closed manually");
-    delay(1000); // Wait for a second before next action
-  } else if (distance < 15 || vehicleDetected == HIGH) {  // If a vehicle is detected within 15 cm or IR sensor is triggered
-    // Green light ON (vehicle detected), red light OFF
-    digitalWrite(greenLight, HIGH);
-    digitalWrite(redLight, LOW);
-    digitalWrite(yellowLight, LOW);
-    
-    // Open the toll gate (move servo to 90 degrees)
-    gateServo.write(90);
-    Serial.println("Gate opened automatically");
-
-    // Wait for 5 seconds to simulate vehicle passing
-    delay(5000);
-    
-    // Close the toll gate (move servo back to 0 degrees)
-    gateServo.write(0);
-    Serial.println("Gate closed automatically");
-  } else {
-    // Red light ON (no vehicle detected), green light OFF
-    digitalWrite(redLight, HIGH);
-    digitalWrite(greenLight, LOW);
-    digitalWrite(yellowLight, LOW);
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();
   }
 
-  // Small delay for sensor stability
-  delay(1000);
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      
+      if (buttonState == LOW) {  // Button pressed
+        if (gateOpen) {
+          closeGate();
+        } else {
+          openGate();
+        }
+      }
+    }
+  }
+  
+  lastButtonState = reading;
+
+  // Measure distance and control LEDs and gate based on distance
+  distance = getDistance();
+  Serial.print("Distance: ");
+  Serial.println(distance);
+
+  if (distance <= 2) {  // If object is very close, turn on red LED, keep gate closed
+    closeGate();
+    digitalWrite(redLED, HIGH);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, LOW);
+  } else if (distance > 2 && distance <= 5) {  // Object in caution range, yellow LED on
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, HIGH);
+    digitalWrite(greenLED, LOW);
+  } else if (distance > 5 && distance <= 10) {  // Object in range, green LED on, open gate
+    openGate();
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, HIGH);
+  } else {  // Object out of range, close gate and red LED on
+    closeGate();
+    digitalWrite(redLED, HIGH);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, LOW);
+  }
+
+  delay(50); // Small delay for stability
 }
 
+// Function to measure distance using ultrasonic sensor
+int getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH);
+  distance = duration * 0.034 / 2;
+
+  return distance;
+}
+
+// Function to open the gate
+void openGate() {
+  if (!gateOpen) {
+    gateServo.write(90);  // Rotate servo to open position
+    gateOpen = true;
+    Serial.println("Gate opened");
+  }
+}
+
+// Function to close the gate
+void closeGate() {
+  if (gateOpen) {
+    gateServo.write(0);  // Rotate servo to closed position
+    gateOpen = false;
+    Serial.println("Gate closed");
+  }
+}
